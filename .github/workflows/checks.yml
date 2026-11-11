@@ -1,0 +1,73 @@
+name: Checks
+
+# Static checks of the data workflows (least privilege, pinned actions, build/publish split, the "nightly"
+# environment for signing), tests of those checks, and, against the pinned GameCove commit, that the identities they
+# sign with are exactly the ones the app pins (tests/check_workflows.py). Nothing is published.
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: data
+      - name: The GameCove commit the workflows build from (gamecove-source.env)
+        id: src
+        working-directory: data
+        run: |
+          repo="$(sed -n 's/^GAMECOVE_REPO=//p' gamecove-source.env)"
+          commit="$(sed -n 's/^GAMECOVE_COMMIT=//p' gamecove-source.env)"
+          printf '%s\n' "$repo" | grep -qxF 'IHulkSmashI/GameCove' || { echo "::error::GAMECOVE_REPO isn't GameCove: $repo"; exit 1; }
+          printf '%s\n' "$commit" | grep -qxE '[0-9a-f]{40}' || { echo "::error::GAMECOVE_COMMIT isn't a full commit id: $commit"; exit 1; }
+          echo "repo=$repo" >>"$GITHUB_OUTPUT"
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ steps.src.outputs.repo }}
+          ref: ${{ steps.src.outputs.commit }}
+          persist-credentials: false
+          path: src
+      - name: PyYAML (Ubuntu's signed package)
+        run: /usr/bin/python3 -c "import yaml" 2>/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q python3-yaml; }
+      - name: Check the workflows
+        run: /usr/bin/python3 -I data/tests/check_workflows.py data
+      - name: The checks catch what they're for
+        run: /usr/bin/python3 -I data/tests/test_checks.py data
+      - name: The pinned GameCove pins exactly the identities these workflows sign with
+        # fails while gamecove-source.env still names a commit from before the move (the app there pins the old
+        # home): bump it to the GameCove main commit that has app/scripts/system/data_repo.gd
+        run: /usr/bin/python3 -I data/tests/check_workflows.py data src
+
+  nightly-environment:
+    # the signing jobs refuse to run without it (GitHub would create it unprotected); this shows it on every push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: data
+          sparse-checkout: |
+            tests/check_environment.py
+          sparse-checkout-cone-mode: false
+      - name: The "nightly" environment exists and only main can deploy to it (GitHub would create it unprotected)
+        working-directory: data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api "repos/$GH_REPO/environments/nightly" >environment.json 2>/dev/null || : >environment.json
+          gh api "repos/$GH_REPO/environments/nightly/deployment-branch-policies" >policies.json 2>/dev/null || : >policies.json
+          python3 -I tests/check_environment.py environment.json policies.json

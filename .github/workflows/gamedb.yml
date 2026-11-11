@@ -1,0 +1,161 @@
+name: Nightly game database
+
+# gamedb.json.gz (game database) and upcoming.json.gz (Discover's release calendar) on the rolling "gamedb" release,
+# built by GameCove's own gamedb/ package, checked out at the commit gamecove-source.env pins.
+#
+# Two jobs: "build" runs the tests and the scrapers (third-party sites, pip packages) with a read-only token and hands
+# dist/ over as an artifact; only "publish", which runs nothing but gh and a standard-library check of the files, can
+# write the release.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      previous:
+        description: "Where last night's files come from (old-home: GameCove's own release, only for the first run after the move)"
+        type: choice
+        options: [data-repo, old-home]
+        default: data-repo
+
+permissions: {}
+
+concurrency:
+  group: gamedb
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # the rolling release is built from main only
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: src/gamedb
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: data
+          sparse-checkout: |
+            gamecove-source.env
+          sparse-checkout-cone-mode: false
+      - name: The GameCove commit to build from (gamecove-source.env)
+        id: src
+        working-directory: data
+        run: |
+          repo="$(sed -n 's/^GAMECOVE_REPO=//p' gamecove-source.env)"
+          commit="$(sed -n 's/^GAMECOVE_COMMIT=//p' gamecove-source.env)"
+          printf '%s\n' "$repo" | grep -qxF 'IHulkSmashI/GameCove' || { echo "::error::GAMECOVE_REPO isn't GameCove: $repo"; exit 1; }
+          printf '%s\n' "$commit" | grep -qxE '[0-9a-f]{40}' || { echo "::error::GAMECOVE_COMMIT isn't a full commit id: $commit"; exit 1; }
+          echo "repo=$repo" >>"$GITHUB_OUTPUT"
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ steps.src.outputs.repo }}
+          ref: ${{ steps.src.outputs.commit }}
+          persist-credentials: false
+          path: src
+      - name: Exactly the pinned commit
+        env:
+          COMMIT: ${{ steps.src.outputs.commit }}
+        run: test "$(git rev-parse HEAD)" = "$COMMIT"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - run: pip install --require-hashes --no-deps -r ../tools/ci/requirements-pytest.txt
+      - run: python -m pytest -q
+      - name: Where last night's files are
+        id: prev
+        env:
+          PREVIOUS: ${{ inputs.previous }}
+          REPO: ${{ github.repository }}
+        run: |
+          base="https://github.com/$REPO/releases/download/gamedb"
+          if [ "$PREVIOUS" = old-home ]; then
+            base="https://github.com/IHulkSmashI/GameCove/releases/download/gamedb"
+          fi
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+      - name: Build
+        # Each source falls back to last night's published data if it fails, so this
+        # only fails when there is nothing at all to publish (the old file then stays),
+        # or when the file would unpack past the app's cap (gamedb.gd MAX_UNPACKED).
+        # +15 min for game details: about 10 min of Steam store appdetails (a slice of
+        # the popular games each night, at Steam's ~200 requests / 5 min) and IGDB
+        # details. OpenCritic is deliberately not fetched here (its data may not be
+        # redistributed; see GameCove's CREDITS.md), so there's no OpenCritic secret.
+        env:
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PREV: ${{ steps.prev.outputs.base }}
+        run: python -m gamedb.build --out dist/gamedb.json.gz --max-minutes 70 --previous-url "$PREV/gamedb.json.gz"
+      - name: Coverage check (the most popular games must all be in it)
+        # Fails the job (so nothing is published and last night's file stays) if any
+        # game on gamedb/coverage.py's MUST_HAVE list has no entry.
+        run: python -m gamedb.coverage dist/gamedb.json.gz
+      - name: Build the Discover calendar (upcoming releases + ECB exchange rates)
+        # Separate file and budget: a failure here never blocks gamedb.json.gz,
+        # and the previous upcoming.json.gz then stays on the release.
+        continue-on-error: true
+        env:
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          PREV: ${{ steps.prev.outputs.base }}
+        run: python -m gamedb.upcoming --out dist/upcoming.json.gz --max-minutes 12 --previous-url "$PREV/upcoming.json.gz"
+      - name: Hand over the files (with the notice that goes on the release)
+        run: cp NOTICE.md dist/NOTICE.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gamedb-dist
+          path: src/gamedb/dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # the rolling "gamedb" release
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: gamedb-dist
+          path: dist
+      - name: Check the files (Python's standard library only)
+        run: |
+          python3 -I - dist <<'PY'
+          import gzip, json, os, sys
+          d = sys.argv[1]
+          allowed = {"gamedb.json.gz", "upcoming.json.gz", "NOTICE.md"}
+          names = set(os.listdir(d))
+          assert names <= allowed and {"gamedb.json.gz", "NOTICE.md"} <= names, sorted(names)
+          for n in names:
+              p = os.path.join(d, n)
+              assert os.path.isfile(p) and not os.path.islink(p), n
+          for n in names - {"NOTICE.md"}:
+              with gzip.open(os.path.join(d, n)) as f:
+                  raw = f.read(256 * 1024 * 1024 + 1)
+              assert len(raw) <= 256 * 1024 * 1024, n + ": too large"
+              doc = json.loads(raw)
+              assert isinstance(doc, dict), n
+          g = json.loads(gzip.open(os.path.join(d, "gamedb.json.gz")).read())
+          assert isinstance(g.get("games"), list) and g["games"], "gamedb.json.gz has no games"
+          PY
+      - name: Publish to the rolling "gamedb" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # the notes and NOTICE.md carry IGDB's, ProtonDB's, Steam's and Metacritic's attribution; refreshed every run
+          gh release view gamedb >/dev/null 2>&1 || gh release create gamedb --title "Game database" --notes-file dist/NOTICE.md --latest=false
+          gh release edit gamedb --notes-file dist/NOTICE.md
+          gh release upload gamedb dist/NOTICE.md --clobber
+          gh release upload gamedb dist/gamedb.json.gz --clobber
+          if [ -s dist/upcoming.json.gz ]; then
+            gh release upload gamedb dist/upcoming.json.gz --clobber
+          fi
