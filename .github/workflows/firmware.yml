@@ -50,8 +50,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh api "repos/$GH_REPO/environments/nightly" >environment.json 2>/dev/null || : >environment.json
-          gh api "repos/$GH_REPO/environments/nightly/deployment-branch-policies" >policies.json 2>/dev/null || : >policies.json
+          gh api "repos/$GH_REPO/environments/nightly" >environment.json 2>answer.txt || { cat answer.txt; : >environment.json; }
+          gh api "repos/$GH_REPO/environments/nightly/deployment-branch-policies" >policies.json 2>answer.txt || { cat answer.txt; : >policies.json; }
           python3 -I tests/check_environment.py environment.json policies.json
       - name: The GameCove commit to build from (gamecove-source.env)
         id: src
