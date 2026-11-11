@@ -15,10 +15,11 @@ import sys
 
 import yaml
 
-DATA = ("upscalers.yml", "firmware.yml", "gamedb.yml", "device-photos.yml")
-SIGNED = {"upscalers.yml": "upscalers.json", "firmware.yml": "firmware.json.gz"}
+DATA = ("upscalers.yml", "firmware.yml", "gamedb.yml", "device-photos.yml", "fixes.yml")
+SIGNED = {"upscalers.yml": "upscalers.json", "firmware.yml": "firmware.json.gz", "fixes.yml": "fixes.json"}
 SCRAPER = {"upscalers.yml": "tools/upscalers/build.py", "firmware.yml": "gamedb.firmware.build",
-           "gamedb.yml": "gamedb.build", "device-photos.yml": "tools/device_photos/build.py"}
+           "gamedb.yml": "gamedb.build", "device-photos.yml": "tools/device_photos/build.py",
+           "fixes.yml": "tools/fixes/audit.py"}
 PIN = re.compile(r"^[^@ ]+@[0-9a-f]{40}$")
 REPO = "IHulkSmashI/GameCove-data"
 
@@ -169,6 +170,18 @@ def data_workflows(root: str) -> dict[str, list[str]]:
     for bad in ("python", "cosign", "gh release", "pip "):
         check(bad not in rrun, f"upscalers.yml: report runs no code and publishes nothing ({bad})")
     check(not any(x.get("uses", "").startswith("actions/checkout@") for x in rj["steps"]), "upscalers.yml: report needs no code")
+    fx = yaml.safe_load(open(os.path.join(root, ".github", "workflows", "fixes.yml"), encoding="utf-8"))["jobs"]
+    fr = [s.get("run", "") for s in fx["publish"]["steps"]]
+    fchk = [i for i, x in enumerate(fr) if "tools/fixes/check_dist.py dist" in x]
+    fsig = [i for i, x in enumerate(fr) if "cosign sign-blob" in x]
+    check(bool(fchk) and bool(fsig) and fchk[0] < fsig[0], "fixes.yml: check_dist.py must run before signing")
+    fall = "\n".join(fr)
+    for f in ("audit-state.json", "issues.json"):
+        check(f"cosign sign-blob --yes --bundle dist/{f}.sigstore.json dist/{f}" in fall, f"fixes.yml: signs {f} (GameCove files issues only from a signed one)")
+    check(fall.index("dist/fixes.json.sigstore.json dist/fixes.json.sha256 dist/fixes.json --clobber") > fall.index("dist/issues.json.sigstore.json"),
+          "fixes.yml: the signature bundles first, fixes.json last")
+    check('grep -qxF "const REPO := \\"$REPO\\"" app/scripts/system/data_repo.gd' in runs(fx["build"]),
+          "fixes.yml: build must check the pinned commit reads its fix list from this repo (data_repo.gd REPO)")
     g = yaml.safe_load(open(os.path.join(root, ".github", "workflows", "gamedb.yml"), encoding="utf-8"))["jobs"]["publish"]
     check("gh release upload gamedb dist/NOTICE.md" in runs(g) and "gh release edit gamedb --notes-file dist/NOTICE.md" in runs(g),
           "gamedb.yml: publishes NOTICE.md as an asset and as the notes")
@@ -190,6 +203,10 @@ def against_source(src: str, idents: dict[str, list[str]]) -> None:
     check(idents.get("firmware.yml", [None])[0] == app, f"firmware.yml signs as {idents.get('firmware.yml')}, the app pins {app}")
     up = re.search(r'^const UPSCALERS_SIGNER := "(.*)"$', gd, re.M).group(1).replace("\\\\", "\\")
     check(up == helper, "data_repo.gd UPSCALERS_SIGNER must equal mirror.py SIGNER_IDENTITY")
+    fxs = re.search(r'^const FIXES_SIGNER := "(.*)"$', gd, re.M)
+    check(fxs is not None and idents.get("fixes.yml", [None])[0] == fxs.group(1).replace("\\\\", "\\"),
+          f"fixes.yml signs as {idents.get('fixes.yml')}, the app pins {fxs.group(1) if fxs else None}")
+    check('const FIXES_URL := RELEASES + "fixes/fixes.json"' in gd, "data_repo.gd FIXES_URL must be this repo's fixes release")
     check(f'const RELEASES := "https://github.com/{REPO}/releases/download/"' in gd, "data_repo.gd must download from this repo")
     for comp, rule in (("tools/upscalers/build.py", r"^MIN_AGE_H = 72\b"),):
         check(re.search(rule, open(os.path.join(src, comp), encoding="utf-8").read(), re.M) is not None,

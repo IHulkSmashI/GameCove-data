@@ -71,6 +71,11 @@ assert "only on main" in mutated("upscalers.yml", "    if: github.ref == 'refs/h
 assert "pinned commit" in mutated("gamedb.yml", 'run: test "$(git rev-parse HEAD)" = "$COMMIT"', "run: echo skipped")
 assert "mirror files never" in mutated("upscalers.yml", 'gh release upload "$tag" "dist/$path"', 'gh release upload "$tag" "dist/$path" --clobber')
 assert "pinned commit names this repo" in mutated("upscalers.yml", "REPO = \\\"$REPO\\\"", "REPO = x")
+assert "nightly" in mutated("fixes.yml", "    environment: nightly\n", "")
+assert "check_dist.py must run before signing" in mutated("fixes.yml", "python3 -I tools/fixes/check_dist.py dist", "true")
+assert "signs issues.json" in mutated("fixes.yml", "cosign sign-blob --yes --bundle dist/issues.json.sigstore.json dist/issues.json\n", "")
+assert "reads its fix list from this repo" in mutated("fixes.yml", 'grep -qxF "const REPO := \\"$REPO\\"" app/scripts/system/data_repo.gd', "true")
+assert "build must not sign" in mutated("fixes.yml", "          mkdir -p prev\n", "          mkdir -p prev; cosign sign-blob x\n")
 
 # the GameCove side: a pin that predates the move, or an app that pins another identity, fails
 with tempfile.TemporaryDirectory() as d:
@@ -90,4 +95,13 @@ with tempfile.TemporaryDirectory() as d:
     r = subprocess.run(check + [root, os.path.join(d, "s")], capture_output=True, text=True)
     out = r.stdout + r.stderr
     assert "the app pins" in out, out
+with tempfile.TemporaryDirectory() as d:
+    shutil.copytree(src, os.path.join(d, "s"))
+    gd = os.path.join(d, "s", "app/scripts/system/data_repo.gd")
+    text = open(gd).read()
+    assert "fixes\\\\.yml" in text
+    open(gd, "w").write(text.replace("fixes\\\\.yml", "firmware\\\\.yml"))
+    r = subprocess.run(check + [root, os.path.join(d, "s")], capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    assert "fixes.yml signs as" in out, out
 print("test_checks: all passed")

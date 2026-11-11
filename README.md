@@ -1,7 +1,7 @@
 # GameCove-data
 
 The data [GameCove](https://github.com/IHulkSmashI/GameCove) downloads: the game database, the firmware list, the
-upscaler files and their signed list, and the device photos. The app fetches these files itself. They're **not meant
+upscaler files and their signed list, the device photos, and the signed list of device fixes. The app fetches these files itself. They're **not meant
 for direct use**: there's nothing to install here. To get GameCove, go to
 [GameCove's releases](https://github.com/IHulkSmashI/GameCove/releases).
 
@@ -14,15 +14,18 @@ They live in their own repo so GameCove's Releases page lists only real app vers
 | [`gamedb`](https://github.com/IHulkSmashI/GameCove-data/releases/tag/gamedb) | `gamedb.json.gz` (game database), `upcoming.json.gz` (Discover's release calendar), `NOTICE.md` (sources and credits, also the release notes) | Nightly (`gamedb.yml`) | No (fetched over HTTPS, size-capped) |
 | [`firmware`](https://github.com/IHulkSmashI/GameCove-data/releases/tag/firmware) | `firmware.json.gz` (newest BIOS / EC / controller firmware each maker lists per handheld, plus Linux driver versions: versions, dates and links only, no firmware), `.sha256`, `.sigstore.json` | Nightly (`firmware.yml`) | Yes |
 | [`upscalers`](https://github.com/IHulkSmashI/GameCove-data/releases/tag/upscalers) (and `upscalers-2`, ... once one nears GitHub's 1000-file limit) | Unmodified copies of OptiScaler (stable and v10 nightly, each with the source archive of the exact commit it was built from), OptiPatcher, fakenvapi, xess-xmx-linux (the XeSS XMX driver), REFramework and the FSR 4 files (Intel XMX build and AMD's own DLL with its licence notice), each named `<component>-<version>-<sha256[:8]>-<upstream name>`; `upscalers.json` (newest version of each, upstream URL, mirror URL, sha256, size, date), `.sha256`, `.sigstore.json` | Nightly (`upscalers.yml`); files are never deleted or replaced, so every pinned hash keeps resolving | Yes (`upscalers.json`) |
+| [`fixes`](https://github.com/IHulkSmashI/GameCove-data/releases/tag/fixes) | `fixes.json` (GameCove's device fix definitions at the pinned commit, plus what the nightly audit of each fix's upstream sources recorded), `.sha256`, `.sigstore.json`; `audit-state.json` (the audit's snapshot) and `issues.json` (what changed, filed as issues in the GameCove repo by its `fix-audit.yml`), each with its `.sigstore.json` | Nightly (`fixes.yml`) | Yes (all three JSON files) |
 | [`device-photos`](https://github.com/IHulkSmashI/GameCove-data/releases/tag/device-photos) | One WebP per handheld (about 1200 px wide), `manifest.json` (sha256, size, author, licence and source page of every photo) | Weekly (`device-photos.yml`) | No; the app checks each photo's size and sha256 against the manifest and re-applies the free-licence allowlist |
 
 ## How GameCove checks them
 
-`firmware.json.gz` and `upscalers.json` are signed with [cosign](https://github.com/sigstore/cosign) keyless
+`firmware.json.gz`, `upscalers.json` and `fixes.json` are signed with [cosign](https://github.com/sigstore/cosign) keyless
 (Sigstore). GameCove accepts them only when the signature was made by exactly this repo's workflow on `main`:
 
 - `https://github.com/IHulkSmashI/GameCove-data/.github/workflows/firmware.yml@refs/heads/main`
 - `https://github.com/IHulkSmashI/GameCove-data/.github/workflows/upscalers.yml@refs/heads/main`
+- `https://github.com/IHulkSmashI/GameCove-data/.github/workflows/fixes.yml@refs/heads/main` (`fixes.json`; GameCove
+  also checks `issues.json` against it before filing an issue)
 
 with the issuer `https://token.actions.githubusercontent.com` (GitHub Actions). The pins are in GameCove's
 `app/scripts/system/data_repo.gd` and `packaging/helpers/gamecove_upscale/mirror.py`. Without a valid signature the
@@ -31,8 +34,8 @@ maker firmware downloads are offered only from a list whose signature checked ou
 
 ## How they're built
 
-Each workflow runs GameCove's own builders (`gamedb/`, `tools/upscalers/`, `tools/device_photos/`, with their
-tests), checked out read-only at the GameCove commit `gamecove-source.env` pins. Every workflow has two jobs:
+Each workflow runs GameCove's own builders (`gamedb/`, `tools/upscalers/`, `tools/device_photos/`, `tools/fixes/`,
+with their tests), checked out read-only at the GameCove commit `gamecove-source.env` pins. Every workflow has two jobs:
 `build` runs the tests, the scrapers and the builder with a read-only token and no signing identity; only `publish`,
 which runs nothing but pinned cosign, `gh` and standard-library checks of the files, can sign and write the release.
 `upscalers.yml` also makes the per-game list from OptiScaler's sources as they were 72 hours ago, runs a smoke
@@ -46,7 +49,8 @@ by hash. `tests/check_workflows.py` (run by `checks.yml` on every push) checks a
 
 ### Updating
 
-After a GameCove change to a builder or its data (`gamedb/`, `tools/upscalers/`, `tools/device_photos/`,
+After a GameCove change to a builder or its data (`gamedb/`, `tools/upscalers/`, `tools/device_photos/`, `fixes/`,
+`tools/fixes/`,
 `app/data/devices.json`, `app/data/device_photos.json`, `packaging/helpers/`, a new tested pin in `versions.json`, or
 the cosign pins in `packaging/get-gamecove.sh`) is on GameCove's `main`, set `GAMECOVE_COMMIT` in
 `gamecove-source.env` to that commit and run the workflow by hand, for example
