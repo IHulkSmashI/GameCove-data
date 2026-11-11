@@ -86,7 +86,8 @@ def data_workflows(root: str) -> dict[str, list[str]]:
         jobs = doc["jobs"]
         check(set(jobs) == {"build", "publish"}, f"{n}: jobs are build and publish: {list(jobs)}")
         b, p = jobs["build"], jobs["publish"]
-        check(b.get("permissions") == {"contents": "read"}, f"{n}: build is read-only: {b.get('permissions')}")
+        want_b = {"contents": "read", "actions": "read"} if n in SIGNED else {"contents": "read"}
+        check(b.get("permissions") == want_b, f"{n}: build is read-only (actions: read only to check the nightly environment): {b.get('permissions')}")
         check(b.get("if") == "github.ref == 'refs/heads/main'", f"{n}: build for publishing only on main")
         check(p.get("needs") == "build", f"{n}: publish needs build")
         brun, prun = runs(b), runs(p)

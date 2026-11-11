@@ -41,6 +41,7 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+      actions: read     # only to read the "nightly" environment's settings (GitHub's "get an environment")
     outputs:
       repo: ${{ steps.src.outputs.repo }}
       commit: ${{ steps.src.outputs.commit }}
