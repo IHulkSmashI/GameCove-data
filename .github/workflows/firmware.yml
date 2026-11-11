@@ -51,8 +51,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh api "repos/$GH_REPO/environments/nightly" >environment.json 2>answer.txt || { cat answer.txt; : >environment.json; }
-          gh api "repos/$GH_REPO/environments/nightly/deployment-branch-policies" >policies.json 2>answer.txt || { cat answer.txt; : >policies.json; }
+          # with the job's token first; this repo is public, so without a token too (GitHub may hide environments
+          # from a workflow token): only when neither answers is the environment taken as missing
+          ask() {
+            gh api "$1" >"$2" 2>answer.txt && return 0
+            echo "with the token: $(cat answer.txt)"
+            curl -fsS -H "Accept: application/vnd.github+json" "https://api.github.com/$1" >"$2" 2>answer.txt && return 0
+            echo "without a token: $(cat answer.txt)"
+            : >"$2"
+          }
+          ask "repos/$GH_REPO/environments/nightly" environment.json
+          ask "repos/$GH_REPO/environments/nightly/deployment-branch-policies" policies.json
           python3 -I tests/check_environment.py environment.json policies.json
       - name: The GameCove commit to build from (gamecove-source.env)
         id: src
