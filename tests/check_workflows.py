@@ -84,7 +84,8 @@ def data_workflows(root: str) -> dict[str, list[str]]:
         on = doc.get("on", doc.get(True))
         check("schedule" in on and "workflow_dispatch" in on, f"{n}: scheduled and by hand")
         jobs = doc["jobs"]
-        check(set(jobs) == {"build", "publish"}, f"{n}: jobs are build and publish: {list(jobs)}")
+        want_jobs = {"build", "publish", "report"} if n == "upscalers.yml" else {"build", "publish"}
+        check(set(jobs) == want_jobs, f"{n}: jobs are {sorted(want_jobs)}: {list(jobs)}")
         b, p = jobs["build"], jobs["publish"]
         want_b = {"contents": "read", "actions": "read"} if n in SIGNED else {"contents": "read"}
         check(b.get("permissions") == want_b, f"{n}: build is read-only (actions: read only to check the nightly environment): {b.get('permissions')}")
@@ -147,6 +148,27 @@ def data_workflows(root: str) -> dict[str, list[str]]:
           "upscalers.yml: only the index is replaced; mirror files never")
     check('gh release upload "$tag" "dist/$path"' in allr and allr.index('gh release upload "$tag" "dist/$path"') < allr.index("--clobber"),
           "upscalers.yml: files first, the index last")
+    # the smoke check gates the signature: dist/ is handed over and publish runs only when it passed
+    ujobs = yaml.safe_load(open(os.path.join(root, ".github", "workflows", "upscalers.yml"), encoding="utf-8"))["jobs"]
+    check(ub.get("outputs", {}).get("smoke") == "${{ steps.smoke.outputs.ok }}"
+          and ujobs["publish"].get("if") == "needs.build.outputs.smoke == 'true'", "upscalers.yml: publish only after the smoke check")
+    names = [x.get("name", "") for x in ub["steps"]]
+    order = [next((i for i, x in enumerate(names) if x.startswith(w)), -1) for w in ("Per-game list", "Build (", "Smoke check", "Upstream watch")]
+    check(-1 not in order and order == sorted(order), "upscalers.yml: game list, build, smoke check, watch, in that order")
+    dist_up = [x for x in ub["steps"] if x.get("with", {}).get("name") == "upscalers-dist"]
+    check(len(dist_up) == 1 and dist_up[0].get("if") == "steps.smoke.outputs.ok == 'true'" and dist_up[0]["with"].get("path") == "src/dist/",
+          "upscalers.yml: src/dist/ is handed over only after the smoke check")
+    check("tools/upscalers/smoke.py dist" in runs(ub) and "ok=false" in runs(ub), "upscalers.yml: build runs the smoke check")
+    check(runs(ub).count("--before='72 hours ago'") == 1 and "for d in upstream/optiscaler upstream/wiki" in runs(ub),
+          "upscalers.yml: the game list is made from sources 72 hours old")
+    rj = ujobs["report"]
+    rrun = runs(rj)
+    check(rj.get("permissions") == {"issues": "write"} and rj.get("needs") == "build" and "always()" in rj.get("if", ""),
+          "upscalers.yml: report only writes issues, after build, always")
+    check("gh issue create" in rrun and "gh issue comment" in rrun, "upscalers.yml: report opens or updates one issue")
+    for bad in ("python", "cosign", "gh release", "pip "):
+        check(bad not in rrun, f"upscalers.yml: report runs no code and publishes nothing ({bad})")
+    check(not any(x.get("uses", "").startswith("actions/checkout@") for x in rj["steps"]), "upscalers.yml: report needs no code")
     g = yaml.safe_load(open(os.path.join(root, ".github", "workflows", "gamedb.yml"), encoding="utf-8"))["jobs"]["publish"]
     check("gh release upload gamedb dist/NOTICE.md" in runs(g) and "gh release edit gamedb --notes-file dist/NOTICE.md" in runs(g),
           "gamedb.yml: publishes NOTICE.md as an asset and as the notes")

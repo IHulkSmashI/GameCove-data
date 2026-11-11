@@ -35,6 +35,10 @@ Each workflow runs GameCove's own builders (`gamedb/`, `tools/upscalers/`, `tool
 tests), checked out read-only at the GameCove commit `gamecove-source.env` pins. Every workflow has two jobs:
 `build` runs the tests, the scrapers and the builder with a read-only token and no signing identity; only `publish`,
 which runs nothing but pinned cosign, `gh` and standard-library checks of the files, can sign and write the release.
+`upscalers.yml` also makes the per-game list from OptiScaler's sources as they were 72 hours ago, runs a smoke
+check over what is new (when it fails nothing is signed and devices keep last night's index) and watches the
+upstreams a person has to look at; a third job, `report`, can only write issues and opens one when something moved
+or a check failed.
 The signing `publish` jobs run in the `nightly` environment, which only `main` can deploy to; their build job stops
 the run if that environment is missing or lets another branch deploy. Upscaler builds are promoted only from each
 component's official repository and only once they've been out 72 hours. Actions are pinned by commit; pip installs
